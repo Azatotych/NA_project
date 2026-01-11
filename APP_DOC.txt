@@ -1,0 +1,56 @@
+STL10 VGG16 Inference UI
+
+Overview
+- Desktop GUI for running VGG16 STL-10 classifiers on the STL-10 train set
+- Lets the user pick images by index, preview them, and run inference
+- Shows predicted class and true label for selected indices
+
+How it works
+1) On startup the app scans the models directory and loads the list of .pt files
+2) It loads the STL-10 train dataset from binary files and builds an index list
+3) The user selects any number of indices from the list
+4) The preview shows the selected image (rotated 90 degrees to the right)
+5) On Run, the selected images are preprocessed and passed through the model
+6) Results are shown in the output panel; the preview shows the last prediction
+
+Data sources
+- Train images: stl10_binary/train_X.bin
+- Train labels: stl10_binary/train_y.bin
+- Image size inside the binary files: 96x96x3 (uint8)
+
+Models used
+- Loads VGG16 architectures with a custom classifier head for 10 classes
+- Weights are loaded from .pt files in the models directory:
+  - models/vgg16_stl10_best.pt
+  - models/vgg16_stl10_last.pt
+  - models/vgg16_stl10_target85.pt
+
+Preprocessing
+- Images are resized to 256, center-cropped to 224
+- Normalized with ImageNet mean/std:
+  mean = (0.485, 0.456, 0.406)
+  std  = (0.229, 0.224, 0.225)
+
+Class mapping (index -> label)
+0 airplane
+1 bird
+2 car
+3 cat
+4 deer
+5 dog
+6 horse
+7 monkey
+8 ship
+9 truck
+
+Preview behavior
+- Preview rotates images 90 degrees to the right for display only
+- Rotation does not affect inference unless the code is changed
+
+How to run
+- Use the project venv:
+  .\venv\Scripts\python.exe app.py
+
+Notes
+- If the dataset files are missing, the app will show an error on startup
+- The UI does not download data or models; it only uses local files
