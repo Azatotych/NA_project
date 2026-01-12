@@ -1,15 +1,13 @@
 import threading
-from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 import torch
 import torchvision.transforms.functional as TF
 
-from core.constants import BIN_DIR, CLASSES, MODEL_DIR
+from core.constants import CLASSES, MODEL_DIR
 from core.dataset import load_train_dataset
 from core.model_io import build_model, load_state_dict
-from core.settings import load_settings, save_settings
 from core.transforms import PIL_AVAILABLE, preprocess, preprocess_x01
 from ui.attacks_window import AttacksWindow
 
@@ -18,15 +16,13 @@ if PIL_AVAILABLE:
 
 
 class App:
-    def __init__(self, root, data_dir=None, model_path=None):
+    def __init__(self, root):
         self.root = root
         self.root.title("STL10 VGG16 Inference")
         self.root.geometry("900x600")
 
         self.model_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready")
-        self.data_dir = data_dir
-        self.model_path = model_path
         self.selected_images = []
         self.model_cache = {}
         self.preview_image = None
@@ -51,8 +47,6 @@ class App:
         self.model_combo.pack(side=tk.LEFT, padx=6, fill=tk.X, expand=True)
 
         ttk.Button(top, text="Refresh", command=self._refresh_models).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="Data source...", command=self._change_data_source).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="Model...", command=self._change_model).pack(side=tk.LEFT, padx=6)
 
         mid = ttk.Frame(root, padding=10)
         mid.pack(fill=tk.BOTH, expand=True)
@@ -98,12 +92,8 @@ class App:
         ttk.Label(bottom, textvariable=self.status_var).pack(anchor=tk.W)
 
     def _refresh_models(self):
-        if self.model_path:
-            model_path = Path(self.model_path)
-            names = [model_path.name] if model_path.exists() else []
-        else:
-            models = sorted(MODEL_DIR.glob("*.pt"))
-            names = [p.name for p in models]
+        models = sorted(MODEL_DIR.glob("*.pt"))
+        names = [p.name for p in models]
         self.model_combo["values"] = names
         if names:
             current = self.model_var.get()
@@ -121,7 +111,7 @@ class App:
 
     def _load_dataset(self):
         try:
-            images, labels = load_train_dataset(self.data_dir)
+            images, labels = load_train_dataset()
 
             def update():
                 self.train_images = images
@@ -138,39 +128,7 @@ class App:
                 self.status_var.set("Dataset load failed")
                 messagebox.showerror("Dataset load failed", str(exc))
 
-        self.root.after(0, update_error)
-
-    def _change_data_source(self):
-        initial_dir = self.data_dir or str(BIN_DIR)
-        new_dir = filedialog.askdirectory(
-            parent=self.root,
-            title="Выберите источник данных (stl10_binary)",
-            initialdir=initial_dir,
-        )
-        if not new_dir:
-            return
-        self.data_dir = new_dir
-        settings = load_settings()
-        settings["data_dir"] = new_dir
-        save_settings(settings)
-        self._load_dataset_async()
-
-    def _change_model(self):
-        initial_dir = self.model_path or str(MODEL_DIR)
-        new_model = filedialog.askopenfilename(
-            parent=self.root,
-            title="Выберите модель (.pt)",
-            initialdir=initial_dir,
-            filetypes=[("PyTorch models", "*.pt"), ("All files", "*.*")],
-        )
-        if not new_model:
-            return
-        self.model_path = new_model
-        self.model_cache.clear()
-        settings = load_settings()
-        settings["model_path"] = new_model
-        save_settings(settings)
-        self._refresh_models()
+            self.root.after(0, update_error)
 
     def _clear_images(self):
         self.selected_images = []
@@ -204,15 +162,12 @@ class App:
         self.status_var.set(f"Selected {len(indices)} images")
         if self.train_images is not None and 0 <= idx < len(self.train_images):
             self._update_preview_index(idx)
-        if self.attacks_window and self.attacks_window.window.winfo_exists():
-            self.attacks_window._sync_from_main()
 
     def _open_attacks_window(self):
         if self.attacks_window and self.attacks_window.window.winfo_exists():
             self.attacks_window.window.lift()
             return
         self.attacks_window = AttacksWindow(self)
-        self.attacks_window._sync_from_main()
 
     def _get_active_index(self):
         selection = self.image_list.curselection()
@@ -300,10 +255,7 @@ class App:
         if model_name in self.model_cache:
             return self.model_cache[model_name]
 
-        if self.model_path:
-            model_path = Path(self.model_path)
-        else:
-            model_path = MODEL_DIR / model_name
+        model_path = MODEL_DIR / model_name
         if not model_path.exists():
             raise FileNotFoundError(f"Model not found: {model_path}")
 

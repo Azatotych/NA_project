@@ -619,9 +619,6 @@ class AttacksWindow:
         item = self.result_items.get(name)
         if item:
             self.tree.item(item, values=(name, before_text, after_text, success_text, linf_text, l2_text, time_text, status))
-            if not self.tree.selection():
-                self.tree.selection_set(item)
-                self.tree.see(item)
 
         if res.get("x_adv") is not None:
             self._refresh_visualization()
@@ -631,17 +628,9 @@ class AttacksWindow:
 
     def _get_selected_attack_name(self):
         selection = self.tree.selection()
-        if selection:
-            return self.tree.item(selection[0], "values")[0]
-        for name in ATTACK_ORDER:
-            res = self.results.get(name)
-            if res and res.get("x_adv") is not None:
-                item = self.result_items.get(name)
-                if item:
-                    self.tree.selection_set(item)
-                    self.tree.see(item)
-                return name
-        return ATTACK_ORDER[0] if ATTACK_ORDER else None
+        if not selection:
+            return None
+        return self.tree.item(selection[0], "values")[0]
 
     def _get_selected_result(self):
         attack_name = self._get_selected_attack_name()
