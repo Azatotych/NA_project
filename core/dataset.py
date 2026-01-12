@@ -1,19 +1,14 @@
-from pathlib import Path
-
 import numpy as np
 
-from core.constants import BIN_DIR, DEPTH, HEIGHT, WIDTH
+from core.constants import DEPTH, HEIGHT, TRAIN_X, TRAIN_Y, WIDTH
 
 
-def load_train_dataset(data_dir=None):
-    base_dir = Path(data_dir) if data_dir else BIN_DIR
-    train_x = base_dir / "train_X.bin"
-    train_y = base_dir / "train_y.bin"
-    if not train_x.exists() or not train_y.exists():
+def load_train_dataset():
+    if not TRAIN_X.exists() or not TRAIN_Y.exists():
         raise FileNotFoundError("Missing stl10_binary/train_X.bin or train_y.bin")
 
-    images = np.fromfile(str(train_x), dtype=np.uint8)
-    labels = np.fromfile(str(train_y), dtype=np.uint8)
+    images = np.fromfile(str(TRAIN_X), dtype=np.uint8)
+    labels = np.fromfile(str(TRAIN_Y), dtype=np.uint8)
 
     if images.size % (HEIGHT * WIDTH * DEPTH) != 0:
         raise ValueError("Bad train_X.bin size")

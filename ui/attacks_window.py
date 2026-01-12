@@ -21,7 +21,7 @@ class AttacksWindow:
         self.app = app
         self.window = tk.Toplevel(app.root)
         self.window.title("Атаки (адверсариальные примеры)")
-        self.window.geometry("1280x820")
+        self.window.geometry("1200x800")
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.stop_flag = threading.Event()
@@ -31,7 +31,6 @@ class AttacksWindow:
         self.current_y = None
         self.results = {}
         self.result_items = {}
-
         self.orig_photo = None
         self.adv_photo = None
         self.diff_photo = None
@@ -73,108 +72,109 @@ class AttacksWindow:
         self.aa_version_var = tk.StringVar(value="standard")
 
         self._build_ui()
-        self._refresh_visuals()
+        self._refresh_visualization()
 
     def _build_ui(self):
         root = self.window
-        root.columnconfigure(0, weight=0)
-        root.columnconfigure(1, weight=1)
-        root.rowconfigure(0, weight=1)
+        main = ttk.Frame(root, padding=10)
+        main.pack(fill=tk.BOTH, expand=True)
 
-        sidebar = ttk.Frame(root, padding=10)
-        sidebar.grid(row=0, column=0, sticky="nsew")
-        sidebar.rowconfigure(1, weight=1)
-        sidebar.rowconfigure(3, weight=1)
+        left_container = ttk.Frame(main)
+        left_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
 
-        header = ttk.LabelFrame(sidebar, text="Выбранное изображение", padding=10)
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        ttk.Label(header, textvariable=self.index_var).grid(row=0, column=0, sticky="w")
-        ttk.Label(header, textvariable=self.label_var).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        ttk.Label(header, textvariable=self.pred_before_var).grid(row=2, column=0, sticky="w", pady=(4, 0))
-        ttk.Button(header, text="Синхронизировать с главным", command=self._sync_from_main).grid(
-            row=3, column=0, sticky="ew", pady=(8, 0)
+        left_canvas = tk.Canvas(left_container, highlightthickness=0, width=420)
+        left_scroll = ttk.Scrollbar(left_container, orient=tk.VERTICAL, command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=left_scroll.set)
+
+        left_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        left = ttk.Frame(left_canvas)
+        left_window = left_canvas.create_window((0, 0), window=left, anchor="nw")
+
+        def _on_left_configure(_event):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+            left_canvas.itemconfigure(left_window, width=left_canvas.winfo_width())
+
+        left.bind("<Configure>", _on_left_configure)
+
+        right = ttk.Frame(main)
+        right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        selected = ttk.LabelFrame(left, text="Выбранное изображение", padding=10)
+        selected.pack(fill=tk.X, expand=False)
+
+        ttk.Label(selected, textvariable=self.index_var).pack(anchor=tk.W)
+        ttk.Button(selected, text="Обновить из основного окна", command=self._sync_from_main).pack(
+            anchor=tk.W, pady=6
         )
+        ttk.Label(selected, textvariable=self.label_var).pack(anchor=tk.W)
+        ttk.Label(selected, textvariable=self.pred_before_var).pack(anchor=tk.W)
 
-        params_wrap = ttk.LabelFrame(sidebar, text="Настройки атак", padding=6)
-        params_wrap.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
-        params_wrap.rowconfigure(0, weight=1)
-        params_wrap.columnconfigure(0, weight=1)
+        params = ttk.LabelFrame(left, text="Параметры атак", padding=10)
+        params.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
 
-        params_canvas = tk.Canvas(params_wrap, highlightthickness=0)
-        params_scroll = ttk.Scrollbar(params_wrap, orient=tk.VERTICAL, command=params_canvas.yview)
-        params_canvas.configure(yscrollcommand=params_scroll.set)
-        params_canvas.grid(row=0, column=0, sticky="nsew")
-        params_scroll.grid(row=0, column=1, sticky="ns")
+        self._build_general_params(params)
+        self._build_attack_params(params)
 
-        params_frame = ttk.Frame(params_canvas)
-        params_canvas.create_window((0, 0), window=params_frame, anchor="nw")
+        run_block = ttk.LabelFrame(left, text="Запуск", padding=10)
+        run_block.pack(fill=tk.X, pady=(10, 0))
 
-        def _on_params_configure(_event):
-            params_canvas.configure(scrollregion=params_canvas.bbox("all"))
-
-        params_frame.bind("<Configure>", _on_params_configure)
-
-        self._build_general_params(params_frame)
-        self._build_attack_params(params_frame)
-
-        run_frame = ttk.LabelFrame(sidebar, text="Запуск", padding=10)
-        run_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        run_frame.columnconfigure(0, weight=1)
         self.run_button = ttk.Button(
-            run_frame,
+            run_block,
             text="Провести атаку на выбранное изображение",
             command=self._run_all,
         )
-        self.run_button.grid(row=0, column=0, sticky="ew")
-        self.stop_button = ttk.Button(run_frame, text="Остановить", command=self._stop_attacks, state=tk.DISABLED)
-        self.stop_button.grid(row=0, column=1, padx=(6, 0))
-        ttk.Label(run_frame, textvariable=self.progress_var).grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(run_frame, textvariable=self.attack_progress_var).grid(row=1, column=1, sticky="e", pady=(6, 0))
-        self.attack_progress = ttk.Progressbar(run_frame, orient=tk.HORIZONTAL, mode="determinate")
-        self.attack_progress.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.run_button.pack(side=tk.LEFT)
+        self.stop_button = ttk.Button(run_block, text="Остановить", command=self._stop_attacks, state=tk.DISABLED)
+        self.stop_button.pack(side=tk.LEFT, padx=6)
+        ttk.Label(run_block, textvariable=self.progress_var).pack(side=tk.LEFT, padx=6)
+        ttk.Label(run_block, textvariable=self.attack_progress_var).pack(side=tk.LEFT, padx=6)
 
-        log_frame = ttk.LabelFrame(sidebar, text="Журнал", padding=6)
-        log_frame.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
-        log_frame.rowconfigure(0, weight=1)
-        log_frame.columnconfigure(0, weight=1)
-        self.log_text = tk.Text(log_frame, height=8, wrap=tk.WORD)
+        self.attack_progress = ttk.Progressbar(run_block, orient=tk.HORIZONTAL, length=160, mode="determinate")
+        self.attack_progress.pack(side=tk.LEFT, padx=6)
+
+        log_frame = ttk.LabelFrame(left, text="Журнал", padding=10)
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+
+        self.log_text = tk.Text(log_frame, height=10, wrap=tk.WORD)
         log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=log_scroll.set)
-        self.log_text.grid(row=0, column=0, sticky="nsew")
-        log_scroll.grid(row=0, column=1, sticky="ns")
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        right = ttk.Frame(root, padding=10)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.rowconfigure(1, weight=1)
-        right.columnconfigure(0, weight=1)
+        results = ttk.LabelFrame(right, text="Результаты", padding=10)
+        results.pack(fill=tk.BOTH, expand=True)
 
-        self._build_results_table(right)
-        self._build_preview(right)
+        paned = ttk.PanedWindow(results, orient=tk.VERTICAL)
+        paned.pack(fill=tk.BOTH, expand=True)
+
+        table_frame = ttk.Frame(paned)
+        preview_frame = ttk.Frame(paned)
+        paned.add(table_frame, weight=1)
+        paned.add(preview_frame, weight=2)
+
+        self._build_results_table(table_frame)
+        self._build_preview(preview_frame)
 
     def _build_general_params(self, parent):
-        general = ttk.LabelFrame(parent, text="Общие параметры", padding=8)
-        general.pack(fill=tk.X, pady=(0, 8))
-
-        row = ttk.Frame(general)
+        row = ttk.Frame(parent)
         row.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(row, text="Устройство:").pack(side=tk.LEFT)
         device_combo = ttk.Combobox(row, textvariable=self.device_var, state="readonly", width=10)
         device_combo["values"] = ["Авто", "CPU", "CUDA"]
         device_combo.pack(side=tk.LEFT, padx=6)
 
-        eps_row = ttk.Frame(general)
+        eps_row = ttk.Frame(parent)
         eps_row.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(eps_row, text="Эпсилон (общий):").pack(side=tk.LEFT)
         ttk.Entry(eps_row, textvariable=self.common_eps_var, width=12).pack(side=tk.LEFT, padx=6)
+        ttk.Label(eps_row, text="Ограничение по времени на атаку (сек):").pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Entry(eps_row, textvariable=self.time_limit_var, width=8).pack(side=tk.LEFT, padx=6)
 
-        time_row = ttk.Frame(general)
-        time_row.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(time_row, text="Лимит по времени (сек):").pack(side=tk.LEFT)
-        ttk.Entry(time_row, textvariable=self.time_limit_var, width=8).pack(side=tk.LEFT, padx=6)
-
-        crit = ttk.LabelFrame(general, text="Критерий успеха", padding=6)
-        crit.pack(fill=tk.X, pady=(6, 0))
+        crit = ttk.Frame(parent)
+        crit.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(crit, text="Критерий успеха:").pack(anchor=tk.W)
         ttk.Radiobutton(
             crit,
             text="Сменился класс относительно истинной метки",
@@ -236,13 +236,8 @@ class AttacksWindow:
         combo.pack(side=tk.LEFT, padx=6)
 
     def _build_results_table(self, parent):
-        table_frame = ttk.LabelFrame(parent, text="Результаты атак", padding=6)
-        table_frame.grid(row=0, column=0, sticky="nsew")
-        table_frame.rowconfigure(0, weight=1)
-        table_frame.columnconfigure(0, weight=1)
-
         columns = ("attack", "before", "after", "success", "linf", "l2", "time", "status")
-        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=7)
+        self.tree = ttk.Treeview(parent, columns=columns, show="headings", height=8)
         self.tree.heading("attack", text="Атака")
         self.tree.heading("before", text="До: класс (p)")
         self.tree.heading("after", text="После: класс (p)")
@@ -267,23 +262,20 @@ class AttacksWindow:
 
         self.tree.bind("<<TreeviewSelect>>", self._on_result_select)
 
-        tree_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        tree_scroll = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=tree_scroll.set)
 
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        tree_scroll.grid(row=0, column=1, sticky="ns")
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_preview(self, parent):
-        preview = ttk.LabelFrame(parent, text="Визуализация", padding=8)
-        preview.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
-        preview.rowconfigure(1, weight=1)
-        preview.columnconfigure(0, weight=1)
+        preview = ttk.Frame(parent)
+        preview.pack(fill=tk.BOTH, expand=True)
 
         controls = ttk.Frame(preview)
-        controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        controls.columnconfigure(4, weight=1)
+        controls.pack(fill=tk.X, pady=(0, 8))
 
-        ttk.Label(controls, text="Difference:").grid(row=0, column=0, sticky="w")
+        ttk.Label(controls, text="Difference:").pack(side=tk.LEFT)
         self.diff_signed_rb = ttk.Radiobutton(
             controls,
             text="Signed",
@@ -291,7 +283,7 @@ class AttacksWindow:
             value="signed",
             command=self._refresh_diff_image,
         )
-        self.diff_signed_rb.grid(row=0, column=1, padx=(6, 0))
+        self.diff_signed_rb.pack(side=tk.LEFT, padx=(6, 0))
         self.diff_abs_rb = ttk.Radiobutton(
             controls,
             text="Abs",
@@ -299,9 +291,9 @@ class AttacksWindow:
             value="abs",
             command=self._refresh_diff_image,
         )
-        self.diff_abs_rb.grid(row=0, column=2, padx=(6, 12))
+        self.diff_abs_rb.pack(side=tk.LEFT, padx=(6, 12))
 
-        ttk.Label(controls, text="Gain:").grid(row=0, column=3, sticky="w")
+        ttk.Label(controls, text="Gain:").pack(side=tk.LEFT)
         self.gain_scale = ttk.Scale(
             controls,
             from_=1.0,
@@ -310,41 +302,42 @@ class AttacksWindow:
             variable=self.gain_var,
             command=self._on_gain_change,
         )
-        self.gain_scale.grid(row=0, column=4, sticky="ew", padx=(6, 6))
+        self.gain_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
         self.gain_label = ttk.Label(controls, textvariable=self.gain_label_var, width=6)
-        self.gain_label.grid(row=0, column=5, padx=(0, 8))
+        self.gain_label.pack(side=tk.LEFT)
 
         self.auto_gain_button = ttk.Button(controls, text="Auto-gain", command=self._auto_gain)
-        self.auto_gain_button.grid(row=0, column=6, padx=(0, 8))
+        self.auto_gain_button.pack(side=tk.LEFT, padx=(8, 0))
+
         self.blink_button = ttk.Checkbutton(
             controls,
             text="Blink",
             variable=self.blink_var,
             command=self._toggle_blink,
         )
-        self.blink_button.grid(row=0, column=7)
+        self.blink_button.pack(side=tk.LEFT, padx=(8, 0))
 
         panels = ttk.Frame(preview)
-        panels.grid(row=1, column=0, sticky="nsew")
+        panels.pack(fill=tk.BOTH, expand=True)
         panels.columnconfigure(0, weight=1)
         panels.columnconfigure(1, weight=1)
         panels.columnconfigure(2, weight=1)
         panels.rowconfigure(0, weight=1)
 
         orig_frame = ttk.LabelFrame(panels, text="Original", padding=6)
-        orig_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        orig_frame.grid(row=0, column=0, sticky="nsew")
 
         self.orig_label = tk.Label(orig_frame, anchor=tk.CENTER, background="#222", width=256, height=256)
         self.orig_label.pack(pady=6, fill=tk.BOTH, expand=True)
 
         adv_frame = ttk.LabelFrame(panels, text="Adversarial", padding=6)
-        adv_frame.grid(row=0, column=1, sticky="nsew", padx=6)
+        adv_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 8))
 
         self.adv_label = tk.Label(adv_frame, anchor=tk.CENTER, background="#222", width=256, height=256)
         self.adv_label.pack(pady=6, fill=tk.BOTH, expand=True)
 
         diff_frame = ttk.LabelFrame(panels, text="Difference", padding=6)
-        diff_frame.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
+        diff_frame.grid(row=0, column=2, sticky="nsew")
 
         self.diff_label = tk.Label(diff_frame, anchor=tk.CENTER, background="#222", width=256, height=256)
         self.diff_label.pack(pady=6, fill=tk.BOTH, expand=True)
@@ -389,12 +382,12 @@ class AttacksWindow:
             pred_text = self._predict_before_text(self.current_x0)
             self.pred_before_var.set(f"Предсказание (до): {pred_text}")
             self._reset_results(pred_text)
-            self._refresh_visuals()
+            self._refresh_visualization()
         except Exception as exc:
             self.pred_before_var.set("Предсказание (до): -")
             self._log(f"Ошибка подготовки изображения: {exc}")
             self.current_x0 = None
-            self._refresh_visuals()
+            self._refresh_visualization()
 
     def _predict_before_text(self, x01: torch.Tensor) -> str:
         model_name = self.app.model_var.get().strip()
@@ -626,29 +619,18 @@ class AttacksWindow:
         item = self.result_items.get(name)
         if item:
             self.tree.item(item, values=(name, before_text, after_text, success_text, linf_text, l2_text, time_text, status))
-            if not self.tree.selection():
-                self.tree.selection_set(item)
-                self.tree.see(item)
 
         if res.get("x_adv") is not None:
-            self._refresh_visuals()
+            self._refresh_visualization()
 
     def _on_result_select(self, _event):
-        self._refresh_visuals()
+        self._refresh_visualization()
 
     def _get_selected_attack_name(self):
         selection = self.tree.selection()
-        if selection:
-            return self.tree.item(selection[0], "values")[0]
-        for name in ATTACK_ORDER:
-            res = self.results.get(name)
-            if res and res.get("x_adv") is not None:
-                item = self.result_items.get(name)
-                if item:
-                    self.tree.selection_set(item)
-                    self.tree.see(item)
-                return name
-        return ATTACK_ORDER[0] if ATTACK_ORDER else None
+        if not selection:
+            return None
+        return self.tree.item(selection[0], "values")[0]
 
     def _get_selected_result(self):
         attack_name = self._get_selected_attack_name()
@@ -656,7 +638,7 @@ class AttacksWindow:
             return None
         return self.results.get(attack_name)
 
-    def _refresh_visuals(self):
+    def _refresh_visualization(self):
         if not PIL_AVAILABLE:
             self._set_empty_preview(self.orig_label, "Preview requires Pillow")
             self._set_empty_preview(self.adv_label, "Preview requires Pillow")
@@ -704,7 +686,11 @@ class AttacksWindow:
         self._set_diff_preview(diff_vis)
 
     def _refresh_controls_state(self):
-        if not PIL_AVAILABLE or self.current_x0 is None:
+        if not PIL_AVAILABLE:
+            for widget in self._preview_controls:
+                widget.configure(state=tk.DISABLED)
+            return
+        if self.current_x0 is None:
             for widget in self._preview_controls:
                 widget.configure(state=tk.DISABLED)
             return
