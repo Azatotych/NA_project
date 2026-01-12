@@ -1,3 +1,4 @@
+import importlib.util
 import time
 from typing import Any, Dict, Optional
 
@@ -5,23 +6,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:
+TORCHATTACKS_AVAILABLE = importlib.util.find_spec("torchattacks") is not None
+TORCHATTACKS_ERROR = ""
+if TORCHATTACKS_AVAILABLE:
     import torchattacks
 
-    TORCHATTACKS_AVAILABLE = True
-    TORCHATTACKS_ERROR = ""
-except Exception as exc:  # pragma: no cover - import guard
-    TORCHATTACKS_AVAILABLE = False
-    TORCHATTACKS_ERROR = str(exc)
-
-try:
+AUTOATTACK_AVAILABLE = importlib.util.find_spec("autoattack") is not None
+AUTOATTACK_ERROR = ""
+if AUTOATTACK_AVAILABLE:
     from autoattack import AutoAttack
-
-    AUTOATTACK_AVAILABLE = True
-    AUTOATTACK_ERROR = ""
-except Exception as exc:  # pragma: no cover - import guard
-    AUTOATTACK_AVAILABLE = False
-    AUTOATTACK_ERROR = str(exc)
 
 
 ATTACK_ORDER = ["FGSM", "BIM", "PGD", "DeepFool", "C&W", "AutoAttack"]

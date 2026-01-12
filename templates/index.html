@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NA Project — Attacks Demo</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="bg-dark text-light">
+<div class="container-fluid py-3">
+  <div class="row g-3">
+    <div class="col-lg-3">
+      <div class="card bg-secondary text-light">
+        <div class="card-body">
+          <h5 class="card-title">Настройки</h5>
+          <div class="mb-3">
+            <label class="form-label">Папка данных</label>
+            <input class="form-control" id="data-dir" value="{{ data_dir }}">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Путь к модели</label>
+            <input class="form-control" id="model-path" value="{{ model_path }}">
+          </div>
+          <button class="btn btn-light w-100" id="save-settings">Сохранить</button>
+        </div>
+      </div>
+      <div class="card bg-secondary text-light mt-3">
+        <div class="card-body">
+          <h5 class="card-title">Индексы ({{ count }})</h5>
+          <select class="form-select" id="index-list" size="12"></select>
+          <div class="d-grid gap-2 mt-3">
+            <button class="btn btn-outline-light" id="run-infer">Инференс</button>
+            <button class="btn btn-primary" id="run-attacks">Атаки</button>
+          </div>
+          <div class="mt-3" id="infer-output"></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-9">
+      <div class="card bg-secondary text-light mb-3">
+        <div class="card-body">
+          <h5 class="card-title">Визуализация (96×96)</h5>
+          <div class="d-flex gap-4 flex-wrap">
+            <div>
+              <div class="small text-uppercase">Original</div>
+              <img class="img-preview" id="img-orig" alt="Original">
+            </div>
+            <div>
+              <div class="small text-uppercase">Adversarial</div>
+              <img class="img-preview" id="img-adv" alt="Adversarial">
+            </div>
+            <div>
+              <div class="small text-uppercase">Difference</div>
+              <img class="img-preview" id="img-diff" alt="Difference">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card bg-secondary text-light">
+        <div class="card-body">
+          <h5 class="card-title">Результаты атак</h5>
+          <div class="table-responsive">
+            <table class="table table-dark table-striped" id="results-table">
+              <thead>
+                <tr>
+                  <th>Атака</th>
+                  <th>До</th>
+                  <th>После</th>
+                  <th>Успех</th>
+                  <th>Linf</th>
+                  <th>L2</th>
+                  <th>Время</th>
+                  <th>Статус</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+const indexList = document.getElementById('index-list');
+const imgOrig = document.getElementById('img-orig');
+const imgAdv = document.getElementById('img-adv');
+const imgDiff = document.getElementById('img-diff');
+const resultsBody = document.querySelector('#results-table tbody');
+const inferOutput = document.getElementById('infer-output');
+let selectedIndex = null;
+let attackImages = {};
+let diffImages = {};
+
+async function loadIndices() {
+  const res = await fetch('/api/indices?offset=0&limit=200');
+  const data = await res.json();
+  indexList.innerHTML = '';
+  data.indices.forEach(idx => {
+    const opt = document.createElement('option');
+    opt.value = idx;
+    opt.textContent = idx.toString().padStart(5, '0');
+    indexList.appendChild(opt);
+  });
+}
+
+async function updatePreview(idx) {
+  imgOrig.src = `/api/preview/${idx}`;
+  imgAdv.removeAttribute('src');
+  imgDiff.removeAttribute('src');
+}
+
+indexList.addEventListener('change', async () => {
+  selectedIndex = indexList.value;
+  await updatePreview(selectedIndex);
+});
+
+async function runInference() {
+  if (!selectedIndex) return;
+  const res = await fetch('/api/run_inference', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({indices: [parseInt(selectedIndex, 10)]})
+  });
+  const data = await res.json();
+  if (data.results && data.results.length) {
+    inferOutput.textContent = `Предсказание: ${data.results[0].pred}`;
+  }
+}
+
+async function runAttacks() {
+  if (!selectedIndex) return;
+  const res = await fetch('/api/run_attacks', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({idx: parseInt(selectedIndex, 10)})
+  });
+  const data = await res.json();
+  attackImages = data.images || {};
+  diffImages = data.diffs || {};
+  if (data.original) {
+    imgOrig.src = `data:image/png;base64,${data.original}`;
+  }
+  resultsBody.innerHTML = '';
+  Object.entries(data.results || {}).forEach(([name, res]) => {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${name}</td>
+      <td>${formatPred(res.pred_before, res.p_before)}</td>
+      <td>${formatPred(res.pred_after, res.p_after)}</td>
+      <td>${res.success ? 'Да' : res.success === false ? 'Нет' : '-'}</td>
+      <td>${res.linf ?? '-'}</td>
+      <td>${res.l2 ?? '-'}</td>
+      <td>${res.time_ms ?? '-'}</td>
+      <td>${res.error ? 'Ошибка' : res.stopped ? 'Остановлено' : 'ОК'}</td>
+    `;
+    row.addEventListener('click', () => {
+      if (attackImages[name]) {
+        imgAdv.src = `data:image/png;base64,${attackImages[name]}`;
+      }
+      if (diffImages[name]) {
+        imgDiff.src = `data:image/png;base64,${diffImages[name]}`;
+      }
+    });
+    resultsBody.appendChild(row);
+  });
+  const first = Object.keys(attackImages)[0];
+  if (first) {
+    imgAdv.src = `data:image/png;base64,${attackImages[first]}`;
+    imgDiff.src = `data:image/png;base64,${diffImages[first]}`;
+  }
+}
+
+function formatPred(pred, p) {
+  if (pred === null || pred === undefined) return '-';
+  if (p === null || p === undefined) return pred;
+  return `${pred} (p=${Number(p).toFixed(3)})`;
+}
+
+document.getElementById('run-infer').addEventListener('click', runInference);
+document.getElementById('run-attacks').addEventListener('click', runAttacks);
+
+document.getElementById('save-settings').addEventListener('click', async () => {
+  const dataDir = document.getElementById('data-dir').value;
+  const modelPath = document.getElementById('model-path').value;
+  await fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({data_dir: dataDir, model_path: modelPath})
+  });
+  window.location.reload();
+});
+
+loadIndices();
+</script>
+</body>
+</html>

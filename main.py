@@ -1,7 +1,9 @@
 from web_app import run
 
-__all__ = ["run"]
+
+def main():
+    run()
 
 
 if __name__ == "__main__":
-    run()
+    main()
