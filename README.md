@@ -1,106 +1,61 @@
-# STL10 VGG16 Inference UI
+# NA_project — Web Adversarial Attacks Demo
 
-GUI-приложение для демонстрации классификации STL-10 на VGG16 и генерации адверсариальных примеров для одного выбранного изображения. Приложение работает с локальными файлами и не сохраняет результаты на диск.
-
-## Что делает приложение
-
-- Загружает STL-10 train из бинарников.
-- Показывает список индексов изображений (train).
-- Показывает превью выбранного изображения (поворот 90° вправо только для отображения).
-- Запускает инференс для выбранных индексов.
-- Открывает окно атак и генерирует адверсариальные примеры (FGSM, BIM, PGD, DeepFool, C&W, AutoAttack).
-- Показывает, как меняется предсказание после каждой атаки, нормы L∞/L2 и время.
+Современное веб-приложение для демонстрации атак на STL-10 (96×96). Backend на FastAPI, frontend на React/Vite + Tailwind + shadcn/ui.
 
 ## Структура проекта
 
-- `app.py` — основное GUI-приложение.
-- `attacks.py` — движок атак (NormalizedModel, FGSM/BIM/PGD/DeepFool/C&W/AutoAttack).
-- `models/` — веса моделей `.pt` (VGG16 с головой на 10 классов).
-- `stl10_binary/` — датасет STL-10 train (`train_X.bin`, `train_y.bin`).
-- `APP_DOC.txt` — краткая справка по приложению.
+- `na_core/` — ядро: чтение STL-10 bin, загрузка модели, атаки/метрики.
+- `backend/` — FastAPI API + job runner (runs/).
+- `frontend/` — React/Vite + TypeScript + Tailwind UI.
+- `runs/` — артефакты атак и экспорт результатов.
+- `tests/` — контрактные тесты для инвариантов.
+- `scripts/` — запуск dev окружения.
 
-## Требования и окружение
+## Требования
 
-- Python 3.11 (venv внутри проекта).
-- `torch`, `torchvision`, `pillow`.
-- Дополнительно для атак: `torchattacks`.
-- AutoAttack: используется упрощенная реализация в `attacks.py` (без внешнего пакета).
+- Python 3.11
+- `torch`, `torchvision`, `pillow`, `fastapi`, `uvicorn`
+- Node.js 18+ (для фронтенда)
 
-Установка зависимостей в venv:
+## Быстрый запуск
 
+**Linux/macOS:**
 ```
-.\venv\Scripts\pip.exe install torchattacks
-```
-
-## Как запустить
-
-```
-.\venv\Scripts\python.exe app.py
+./scripts/dev.sh
 ```
 
-## Откуда берутся данные
-
-Приложение читает STL-10 train из бинарников:
-
-- `stl10_binary/train_X.bin`
-- `stl10_binary/train_y.bin`
-
-Исходный размер изображения: 96x96x3 (uint8).
-
-## Модель
-
-Архитектура: VGG16 с пользовательской головой на 10 классов:
-
-- Linear(4096) -> ReLU -> Dropout
-- Linear(512) -> ReLU -> Dropout
-- Linear(10)
-
-Веса загружаются из `models/*.pt`.
-
-## Препроцессинг инференса
-
-Для инференса и атак используется единый препроцессинг:
-
-1) resize до 256
-2) center crop до 224
-3) normalize ImageNet mean/std:
-
+**Windows (PowerShell):**
 ```
-mean = (0.485, 0.456, 0.406)
-std  = (0.229, 0.224, 0.225)
+./scripts/dev.ps1
 ```
 
-В атакующем движке используется `NormalizedModel`, который применяет normalize внутри forward().
+После запуска:
+- Backend: http://localhost:8000
+- Frontend: http://localhost:5173
 
-## Окно атак
+## Основные сценарии
 
-Окно атак работает с текущим выделением в списке "Train images".
+1) Выбор изображения по индексу в STL-10 (96×96) + превью.
+2) Инференс: top-k, confidence, latency, true label.
+3) Атаки (FGSM/BIM/PGD/DeepFool/C&W/AutoAttack) в фоне с прогрессом.
+4) Таблица результатов атак + артефакты Original/Adv/Diff.
 
-Ключевые элементы:
+## API (минимум)
 
-- выбор индекса из основного окна;
-- параметры атак (epsilon, alpha, iters и т.д.);
-- запуск всех 6 атак, прогресс выполнения и журнал;
-- таблица результатов (до/после, успех, нормы, время);
-- превью оригинала и результата (поворот 90° вправо только для отображения).
+- `GET  /api/v1/health`
+- `GET  /api/v1/attacks`
+- `GET  /api/v1/defenses`
+- `GET  /api/v1/dataset/info`
+- `GET  /api/v1/images/{index}?format=png|raw`
+- `POST /api/v1/infer`
+- `POST /api/v1/jobs/attack`
+- `GET  /api/v1/jobs/{job_id}`
+- `WS   /api/v1/ws/jobs/{job_id}`
+- `GET  /api/v1/jobs/{job_id}/artifacts/{attack_name}?type=original|adv|diff&format=png&amplify=...`
+- `GET  /api/v1/jobs/{job_id}/export.csv`
+- `GET  /api/v1/jobs/{job_id}/export.json`
 
-## AutoAttack
+## Инварианты
 
-Полная версия AutoAttack не устанавливается из PyPI. В проекте используется упрощенная реализация:
-
-- FGSM
-- BIM
-- PGD (random start)
-
-Из трех кандидатов выбирается тот, у которого максимальная потеря (CE).
-
-## Файлы, с которыми работает приложение
-
-- Обязательные: `stl10_binary/train_X.bin`, `stl10_binary/train_y.bin`, `models/*.pt`.
-- Опциональные: `stl/` (не используется в текущем UI), `lern.ipynb` (обучение, не требуется для запуска).
-
-## Ограничения
-
-- Не сохраняет результаты на диск.
-- Превью поворачивается на 90° вправо только визуально, инференс не зависит от поворота.
-
+- **Bin reader:** использует исходную логику чтения STL-10 `.bin` (см. `na_core/dataset.py`).
+- **Model loader:** загрузка модели/весов эквивалентна прежней реализации (см. `na_core/model_io.py`).
