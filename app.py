@@ -1,6 +1,8 @@
-from web_app import run
+from ui.attacks_window import AttacksWindow
+from ui.main_window import App
+from main import main
 
-__all__ = ["run"]
+__all__ = ["App", "AttacksWindow", "main"]
 
 
 if __name__ == "__main__":

@@ -1,13 +1,15 @@
-import importlib.util
-
 import torch
 from torchvision import transforms
 import torchvision.transforms.functional as TF
 
 
-PIL_AVAILABLE = importlib.util.find_spec("PIL") is not None
-if PIL_AVAILABLE:
+PIL_AVAILABLE = False
+try:
     from PIL import Image
+
+    PIL_AVAILABLE = True
+except Exception:
+    PIL_AVAILABLE = False
 
 
 PIL_TRANSFORM = transforms.Compose(
