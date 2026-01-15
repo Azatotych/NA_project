@@ -19,3 +19,6 @@ models/
 stl10_binary/
 stl/
 errors.txt
+frontend/node_modules/
+runs/
+.na_project.json

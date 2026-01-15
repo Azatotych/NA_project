@@ -2,6 +2,7 @@ import asyncio
 import json
 import threading
 import time
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -108,7 +109,7 @@ def _tensor_to_png(x01: torch.Tensor, size: int = 96) -> bytes:
     x = x01.detach().cpu().squeeze(0).clamp(0.0, 1.0)
     arr = (x.permute(1, 2, 0).numpy() * 255.0).astype("uint8")
     img = Image.fromarray(arr).resize((size, size))
-    buffer = Path("/tmp") / f"na_preview_{time.time_ns()}.png"
+    buffer = Path(tempfile.gettempdir()) / f"na_preview_{time.time_ns()}.png"
     img.save(buffer, format="PNG")
     data = buffer.read_bytes()
     buffer.unlink(missing_ok=True)
@@ -280,7 +281,7 @@ def image(index: int, format: str = Query("png")):
     if not PIL_AVAILABLE:
         raise HTTPException(status_code=400, detail="Preview requires Pillow")
     img = Image.fromarray(arr.transpose(1, 2, 0)).resize((96, 96))
-    path = Path("/tmp") / f"na_image_{time.time_ns()}.png"
+    path = Path(tempfile.gettempdir()) / f"na_image_{time.time_ns()}.png"
     img.save(path, format="PNG")
     return FileResponse(path, media_type="image/png")
 

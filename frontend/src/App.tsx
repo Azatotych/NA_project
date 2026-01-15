@@ -45,19 +45,49 @@ export default function App() {
   const [selectedAttacks, setSelectedAttacks] = useState<Record<string, boolean>>({});
   const [job, setJob] = useState<JobStatus | null>(null);
   const [selectedAttack, setSelectedAttack] = useState<string | null>(null);
+  const [metaError, setMetaError] = useState<string | null>(null);
+
+  const loadMetadata = async (): Promise<boolean> => {
+    try {
+      const [datasetRes, attacksRes] = await Promise.all([
+        fetch("/api/v1/dataset/info"),
+        fetch("/api/v1/attacks"),
+      ]);
+      if (!datasetRes.ok || !attacksRes.ok) {
+        throw new Error("Metadata fetch failed");
+      }
+      const dataset = await datasetRes.json();
+      const attacksData = await attacksRes.json();
+      setDatasetInfo(dataset);
+      setAttacks(attacksData.attacks || []);
+      const initial: Record<string, boolean> = {};
+      (attacksData.attacks || []).forEach((name: string) => (initial[name] = true));
+      setSelectedAttacks(initial);
+      setMetaError(null);
+      return true;
+    } catch {
+      setMetaError("Backend is not ready. Retrying...");
+      return false;
+    }
+  };
 
   useEffect(() => {
-    fetch("/api/v1/dataset/info")
-      .then((res) => res.json())
-      .then(setDatasetInfo);
-    fetch("/api/v1/attacks")
-      .then((res) => res.json())
-      .then((data) => {
-        setAttacks(data.attacks || []);
-        const initial: Record<string, boolean> = {};
-        (data.attacks || []).forEach((name: string) => (initial[name] = true));
-        setSelectedAttacks(initial);
-      });
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (cancelled) return;
+      const ok = await loadMetadata();
+      if (!ok && !cancelled) {
+        timer = setTimeout(tick, 2000);
+      }
+    };
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -123,6 +153,7 @@ export default function App() {
           <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
             <h2 className="text-lg font-semibold">Dataset</h2>
             <p className="text-sm text-slate-400">Размер: {datasetInfo?.size ?? "-"}</p>
+            {metaError && <p className="mt-2 text-xs text-amber-400">{metaError}</p>}
             <div className="mt-4 flex items-center gap-2">
               <Button variant="outline" onClick={() => setIndex((prev) => Math.max(prev - 1, 0))}>
                 Prev
@@ -169,18 +200,22 @@ export default function App() {
           <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
             <h2 className="text-lg font-semibold">Attacks</h2>
             <div className="mt-3 space-y-2 text-sm">
-              {attacks.map((name) => (
-                <label key={name} className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={selectedAttacks[name] ?? false}
-                    onChange={(e) =>
-                      setSelectedAttacks((prev) => ({ ...prev, [name]: e.target.checked }))
-                    }
-                  />
-                  <span>{name}</span>
-                </label>
-              ))}
+              {attacks.length === 0 ? (
+                <div className="text-xs text-slate-500">No attacks loaded yet.</div>
+              ) : (
+                attacks.map((name) => (
+                  <label key={name} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedAttacks[name] ?? false}
+                      onChange={(e) =>
+                        setSelectedAttacks((prev) => ({ ...prev, [name]: e.target.checked }))
+                      }
+                    />
+                    <span>{name}</span>
+                  </label>
+                ))
+              )}
             </div>
             <Button className="mt-4 w-full" variant="primary" onClick={handleRunAttacks}>
               Run attacks
