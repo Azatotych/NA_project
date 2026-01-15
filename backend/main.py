@@ -222,6 +222,19 @@ def _cleanup_jobs():
             job_dir.rmdir()
 
 
+def _reset_jobs():
+    for job_id, job in list(JOBS.items()):
+        job["stop"] = True
+        job["status"] = "stopped"
+        job["progress"] = 0
+        job["results"] = []
+        job_dir = RUNS_DIR / job_id
+        if job_dir.exists():
+            for path in job_dir.rglob("*"):
+                path.unlink(missing_ok=True)
+            job_dir.rmdir()
+
+
 def _get_x01_from_index(idx: int) -> torch.Tensor:
     arr = STATE.images[idx]
     if PIL_AVAILABLE:
@@ -422,6 +435,12 @@ def export_json(job_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Export not available")
     return FileResponse(path, media_type="application/json")
+
+
+@app.post("/api/v1/jobs/reset")
+def reset_jobs():
+    _reset_jobs()
+    return {"ok": True}
 
 
 @app.post("/api/v1/settings")

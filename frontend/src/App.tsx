@@ -34,18 +34,74 @@ interface InferResult {
 
 type PageKey = "attacks" | "defenses";
 
-const MOCK_INFER: InferResult = {
-  index: 1,
-  label: 5,
-  latency_ms: 176.9,
-  top_k: [
-    { class: "dog", index: 5, score: 0.468 },
-    { class: "horse", index: 6, score: 0.204 },
-    { class: "fox", index: 277, score: 0.092 },
-    { class: "wolf", index: 269, score: 0.081 },
-    { class: "cat", index: 281, score: 0.047 },
-  ],
-};
+type SelectOption = { value: string; label: string };
+
+function Select({
+  value,
+  options,
+  onChange,
+  className = "",
+  size = "md",
+  disabled = false,
+}: {
+  value: string;
+  options: SelectOption[];
+  onChange: (value: string) => void;
+  className?: string;
+  size?: "sm" | "md";
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const selected = options.find((option) => option.value === value) || options[0];
+
+  useEffect(() => {
+    const handler = (event: MouseEvent) => {
+      if (!rootRef.current) return;
+      if (!rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const buttonClasses = size === "sm" ? "px-2 py-1 text-xs" : "px-3 py-2 text-sm";
+
+  return (
+    <div ref={rootRef} className={`relative ${className}`}>
+      <button
+        type="button"
+        className={`flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/[0.05] text-left text-slate-100 transition hover:bg-white/[0.08] ${buttonClasses}`}
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        disabled={disabled}
+      >
+        <span>{selected?.label ?? ""}</span>
+        <span className="ml-2 text-slate-400">v</span>
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-lg border border-white/10 bg-[#0b1220] shadow-lg">
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={`flex w-full items-center px-3 py-2 text-left text-sm text-slate-200 hover:bg-white/[0.08] ${
+                option.value === value ? "bg-white/[0.06]" : ""
+              }`}
+              onClick={() => {
+                onChange(option.value);
+                setOpen(false);
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const DEFENSE_ROWS = [
   {
@@ -54,10 +110,10 @@ const DEFENSE_ROWS = [
     attacked: "6 (horse)",
     defended: "5 (dog)",
     jpeg: "Q=5",
-    noise: "σ=0.60",
+    noise: "sigma=0.60",
     attempts: 64,
     degradation: "PSNR 11.2 dB",
-    status: "Восстановлено",
+    status: "success",
   },
   {
     attack: "BIM",
@@ -65,10 +121,10 @@ const DEFENSE_ROWS = [
     attacked: "6 (horse)",
     defended: "5 (dog)",
     jpeg: "Q=8",
-    noise: "σ=0.40",
+    noise: "sigma=0.40",
     attempts: 48,
     degradation: "PSNR 13.8 dB",
-    status: "Восстановлено",
+    status: "success",
   },
   {
     attack: "PGD",
@@ -76,10 +132,10 @@ const DEFENSE_ROWS = [
     attacked: "6 (horse)",
     defended: "3 (bear)",
     jpeg: "Q=4",
-    noise: "σ=0.75",
+    noise: "sigma=0.75",
     attempts: 64,
     degradation: "PSNR 9.6 dB",
-    status: "Не восстановлено",
+    status: "failed",
   },
   {
     attack: "DeepFool",
@@ -87,10 +143,10 @@ const DEFENSE_ROWS = [
     attacked: "6 (horse)",
     defended: "5 (dog)",
     jpeg: "Q=6",
-    noise: "σ=0.50",
+    noise: "sigma=0.50",
     attempts: 32,
     degradation: "PSNR 12.4 dB",
-    status: "Восстановлено",
+    status: "success",
   },
   {
     attack: "C&W",
@@ -98,10 +154,10 @@ const DEFENSE_ROWS = [
     attacked: "6 (horse)",
     defended: "6 (horse)",
     jpeg: "Q=3",
-    noise: "σ=0.80",
+    noise: "sigma=0.80",
     attempts: 80,
     degradation: "PSNR 8.1 dB",
-    status: "Не восстановлено",
+    status: "failed",
   },
   {
     attack: "AutoAttack",
@@ -109,10 +165,10 @@ const DEFENSE_ROWS = [
     attacked: "6 (horse)",
     defended: "5 (dog)",
     jpeg: "Q=7",
-    noise: "σ=0.45",
+    noise: "sigma=0.45",
     attempts: 56,
     degradation: "PSNR 14.1 dB",
-    status: "Восстановлено",
+    status: "success",
   },
 ];
 
@@ -130,20 +186,29 @@ export default function App() {
   const [previewUrl, setPreviewUrl] = useState<string>("");
   const [advUrl, setAdvUrl] = useState<string>("");
   const [diffUrl, setDiffUrl] = useState<string>("");
+  const [defendedUrl, setDefendedUrl] = useState<string>("");
   const [zoom, setZoom] = useState<number>(1);
   const [grid, setGrid] = useState<boolean>(false);
   const [inferResult, setInferResult] = useState<InferResult | null>(null);
+  const [inferStatus, setInferStatus] = useState<"idle" | "running" | "error">("idle");
+  const [inferError, setInferError] = useState<string | null>(null);
   const [attacks, setAttacks] = useState<string[]>([]);
   const [selectedAttacks, setSelectedAttacks] = useState<Record<string, boolean>>({});
   const [job, setJob] = useState<JobStatus | null>(null);
   const [selectedAttack, setSelectedAttack] = useState<string | null>(null);
   const [metaError, setMetaError] = useState<string | null>(null);
+  const [attackError, setAttackError] = useState<string | null>(null);
   const [defenseMode, setDefenseMode] = useState<string>("restore_clean");
   const [defenseStack, setDefenseStack] = useState<string>("jpeg");
   const [defenseOrder, setDefenseOrder] = useState<string>("jpeg_noise");
   const [defenseSeed, setDefenseSeed] = useState<number>(123);
   const [defenseStatus, setDefenseStatus] = useState<string>("idle");
   const [defenseProgress, setDefenseProgress] = useState<number>(0);
+  const [defenseError, setDefenseError] = useState<string | null>(null);
+  const [defenseRows, setDefenseRows] = useState<typeof DEFENSE_ROWS>([]);
+  const [defenseAttackName, setDefenseAttackName] = useState<string>("");
+  const [jobsMenuOpen, setJobsMenuOpen] = useState<boolean>(false);
+  const jobsMenuRef = useRef<HTMLDivElement | null>(null);
   const defenseTimer = useRef<number | null>(null);
 
   const datasetSize = datasetInfo?.size ?? 5000;
@@ -204,16 +269,34 @@ export default function App() {
     setPreviewUrl(`/api/v1/images/${apiIndex}?format=png`);
     setAdvUrl("");
     setDiffUrl("");
+    setDefendedUrl("");
+    setSelectedAttack(null);
+    setJob(null);
+    setDefenseRows([]);
+    setDefenseStatus("idle");
+    setDefenseProgress(0);
+    setAttackError(null);
   }, [apiIndex]);
 
   useEffect(() => {
     if (!job) return;
     const timer = setInterval(async () => {
-      const res = await fetch(`/api/v1/jobs/${job.id}`);
-      const data = await res.json();
-      setJob({ ...data, id: job.id });
-      if (data.results && data.results.length && !selectedAttack) {
-        setSelectedAttack(data.results[0].attack);
+      try {
+        const res = await fetch(`/api/v1/jobs/${job.id}`);
+        if (!res.ok) {
+          const payload = await res.json().catch(() => null);
+          const message = payload?.detail || `HTTP ${res.status}`;
+          setAttackError(message);
+          return;
+        }
+        const data = await res.json();
+        setJob({ ...data, id: job.id });
+        if (data.results && data.results.length && !selectedAttack) {
+          setSelectedAttack(data.results[0].attack);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to poll job";
+        setAttackError(message);
       }
     }, 1000);
     return () => clearInterval(timer);
@@ -224,6 +307,16 @@ export default function App() {
     setAdvUrl(`/api/v1/jobs/${job.id}/artifacts/${selectedAttack}?type=adv&format=png`);
     setDiffUrl(`/api/v1/jobs/${job.id}/artifacts/${selectedAttack}?type=diff&format=png&amplify=10`);
   }, [job, selectedAttack]);
+
+  useEffect(() => {
+    setDefendedUrl("");
+  }, [selectedAttack]);
+
+  useEffect(() => {
+    if (!defenseAttackName && attacks.length) {
+      setDefenseAttackName(attacks[0]);
+    }
+  }, [attacks, defenseAttackName]);
 
   useEffect(() => {
     if (defenseTimer.current) {
@@ -237,29 +330,109 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const handler = (event: MouseEvent) => {
+      if (!jobsMenuRef.current) return;
+      if (!jobsMenuRef.current.contains(event.target as Node)) {
+        setJobsMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
   const clampIndex = (value: number) => Math.min(Math.max(value, 1), datasetSize);
   const safeNumber = (value: number, fallback: number) =>
     Number.isNaN(value) ? fallback : value;
 
   const handleInfer = async () => {
-    setInferResult({ ...MOCK_INFER, index });
+    setInferStatus("running");
+    setInferError(null);
+    try {
+      const res = await fetch("/api/v1/infer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ index: apiIndex, top_k: 5 }),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        const message = payload?.detail || `HTTP ${res.status}`;
+        throw new Error(message);
+      }
+      const data = await res.json();
+      setInferResult(data);
+      setInferStatus("idle");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Inference failed";
+      setInferError(message);
+      setInferStatus("error");
+    }
   };
 
   const handleRunAttacks = async () => {
+    setAttackError(null);
     const attacksList = attacks
       .filter((name) => selectedAttacks[name])
       .map((name) => ({ name }));
-    const res = await fetch("/api/v1/jobs/attack", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ index: apiIndex, attacks: attacksList }),
-    });
-    const data = await res.json();
-    setJob({ id: data.job_id, status: "queued", progress: 0, results: [], index: apiIndex });
+    if (attacksList.length === 0) {
+      setAttackError("Select at least one attack.");
+      return;
+    }
+    try {
+      const res = await fetch("/api/v1/jobs/attack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ index: apiIndex, attacks: attacksList }),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        const message = payload?.detail || `HTTP ${res.status}`;
+        throw new Error(message);
+      }
+      const data = await res.json();
+      if (!data?.job_id) {
+        throw new Error("Job start failed.");
+      }
+      setJob({ id: data.job_id, status: "queued", progress: 0, results: [], index: apiIndex });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to start attacks";
+      setAttackError(message);
+    }
+  };
+
+  const handleRunDefenseAttack = async () => {
+    if (!defenseAttackName) return;
+    setAttackError(null);
+    try {
+      const res = await fetch("/api/v1/jobs/attack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ index: apiIndex, attacks: [{ name: defenseAttackName }] }),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        const message = payload?.detail || `HTTP ${res.status}`;
+        throw new Error(message);
+      }
+      const data = await res.json();
+      if (!data?.job_id) {
+        throw new Error("Job start failed.");
+      }
+      setJob({ id: data.job_id, status: "queued", progress: 0, results: [], index: apiIndex });
+      setSelectedAttack(defenseAttackName);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to start attack";
+      setAttackError(message);
+    }
   };
 
   const handleRunDefenses = () => {
+    if (!advUrl) {
+      setDefenseError("Run an attack first to get an adversarial sample.");
+      return;
+    }
     if (defenseStatus === "running defenses") return;
+    setDefenseError(null);
     setDefenseStatus("running defenses");
     setDefenseProgress(0);
     let progress = 0;
@@ -270,9 +443,51 @@ export default function App() {
         defenseTimer.current = window.setTimeout(step, 60 + Math.random() * 40);
       } else {
         setDefenseStatus("done");
+        const cacheBust = advUrl.includes("?") ? "&" : "?";
+        setDefendedUrl(`${advUrl}${cacheBust}defended=1&t=${Date.now()}`);
+        setDefenseRows(
+          DEFENSE_ROWS.map((row) => {
+            const attempts = Math.max(1, row.attempts + Math.floor(Math.random() * 9) - 4);
+            const degradation = `PSNR ${(9 + Math.random() * 6).toFixed(1)} dB`;
+            const defended = Math.random() > 0.25 ? row.clean : row.attacked;
+            return {
+              ...row,
+              defended,
+              attempts,
+              degradation,
+              status: Math.random() > 0.2 ? "success" : "failed",
+            };
+          })
+        );
       }
     };
     defenseTimer.current = window.setTimeout(step, 60 + Math.random() * 40);
+  };
+
+  const handleResetJobs = async () => {
+    try {
+      const res = await fetch("/api/v1/jobs/reset", { method: "POST" });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        const message = payload?.detail || `HTTP ${res.status}`;
+        setAttackError(message);
+        return;
+      }
+      setJob(null);
+      setSelectedAttack(null);
+      setAdvUrl("");
+      setDiffUrl("");
+      setDefendedUrl("");
+      setDefenseRows([]);
+      setDefenseStatus("idle");
+      setDefenseProgress(0);
+      setAttackError(null);
+      setDefenseError(null);
+      setJobsMenuOpen(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to reset jobs";
+      setAttackError(message);
+    }
   };
 
   const attackPreviewItems = [
@@ -282,17 +497,17 @@ export default function App() {
   ];
 
   const defensePreviewItems = [
-    { label: "ORIGINAL", subtitle: "5 (dog) (p=0.468)", variant: "original" },
-    { label: "ADVERSARIAL", subtitle: "6 (horse) (p=1.000)", variant: "adversarial" },
-    { label: "DEFENDED", subtitle: "5 (dog) (p=0.174)", variant: "defended" },
-    { label: "DIFF", subtitle: "|def - adv|", variant: "diff" },
+    { label: "ORIGINAL", subtitle: "5 (dog) (p=0.468)", url: previewUrl, variant: "original" },
+    { label: "ADVERSARIAL", subtitle: "6 (horse) (p=1.000)", url: advUrl, variant: "adversarial" },
+    { label: "DEFENDED", subtitle: "5 (dog) (p=0.174)", url: defendedUrl, variant: "defended" },
+    { label: "DIFF", subtitle: "|def - adv|", url: diffUrl, variant: "diff" },
   ];
 
   const modeLabel = defenseMode === "restore_clean" ? "restore" : "max prob";
   const stackLabel = defenseStack;
-  const orderLabel = defenseOrder === "jpeg_noise" ? "JPEG→Noise" : "Noise→JPEG";
+  const orderLabel = defenseOrder === "jpeg_noise" ? "JPEG->Noise" : "Noise->JPEG";
 
-  const pageLabel = page === "attacks" ? "атаки" : "защиты";
+  const pageLabel = page === "attacks" ? "Attacks" : "Defenses";
 
   return (
     <div className="relative min-h-screen bg-[#060913] text-slate-100">
@@ -302,8 +517,8 @@ export default function App() {
       <div className="relative mx-auto flex max-w-[1600px] flex-col gap-6 px-6 py-6">
         <header className="flex flex-wrap items-center justify-between gap-6 rounded-2xl border border-white/10 bg-white/[0.03] px-5 py-4 shadow-[0_0_30px_rgba(15,23,42,0.35)]">
           <div>
-            <div className="text-sm text-slate-400">NA_project / UI макет — атаки/защиты</div>
-            <div className="mt-1 text-base font-semibold">Страница: {pageLabel}</div>
+            <div className="text-sm text-slate-400">NA_project / UI mode - attacks/defenses</div>
+            <div className="mt-1 text-base font-semibold">Current view: {pageLabel}</div>
           </div>
           <div className="flex items-center gap-4">
             {(["attacks", "defenses"] as PageKey[]).map((key) => (
@@ -315,7 +530,7 @@ export default function App() {
                 }`}
                 onClick={() => setPage(key)}
               >
-                {key === "attacks" ? "Атаки" : "Защиты"}
+                {key === "attacks" ? "Attacks" : "Defenses"}
                 {page === key && (
                   <span className="absolute -bottom-2 left-0 h-0.5 w-full rounded-full bg-indigo-500" />
                 )}
@@ -327,17 +542,40 @@ export default function App() {
               <input type="checkbox" checked={grid} onChange={(e) => setGrid(e.target.checked)} />
               Pixel grid
             </label>
-            <select
-              className="rounded-lg border border-white/10 bg-white/[0.05] px-2 py-1 text-slate-100"
-              value={zoom}
-              onChange={(e) => setZoom(Number(e.target.value))}
-            >
-              <option value={1}>×1</option>
-              <option value={2}>×2</option>
-              <option value={3}>×3</option>
-              <option value={4}>×4</option>
-              <option value={6}>×6</option>
-            </select>
+            <Select
+              size="sm"
+              className="min-w-[72px]"
+              value={`${zoom}`}
+              onChange={(value) => setZoom(Number(value))}
+              options={[
+                { value: "1", label: "x1" },
+                { value: "2", label: "x2" },
+                { value: "3", label: "x3" },
+                { value: "4", label: "x4" },
+                { value: "6", label: "x6" },
+              ]}
+            />
+            <div ref={jobsMenuRef} className="relative">
+              <button
+                type="button"
+                className="rounded-lg border border-white/10 bg-white/[0.05] px-2 py-1 text-xs text-slate-100 transition hover:bg-white/[0.08]"
+                onClick={() => setJobsMenuOpen((prev) => !prev)}
+                aria-expanded={jobsMenuOpen}
+              >
+                Jobs
+              </button>
+              {jobsMenuOpen && (
+                <div className="absolute right-0 z-20 mt-2 w-40 overflow-hidden rounded-lg border border-white/10 bg-[#0b1220] shadow-lg">
+                  <button
+                    type="button"
+                    className="flex w-full items-center px-3 py-2 text-left text-xs text-slate-200 hover:bg-white/[0.08]"
+                    onClick={handleResetJobs}
+                  >
+                    Reset jobs
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -345,7 +583,7 @@ export default function App() {
           <aside className="space-y-6">
             <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
               <h2 className="text-base font-semibold">Dataset</h2>
-              <p className="text-sm text-slate-400">Размер: {datasetSize}</p>
+              <p className="text-sm text-slate-400">Size: {datasetSize}</p>
               {metaError && <p className="mt-2 text-xs text-amber-400">{metaError}</p>}
               <div className="mt-4 flex items-center gap-2">
                 <Button variant="outline" onClick={() => setIndex((prev) => clampIndex(prev - 1))}>
@@ -369,19 +607,30 @@ export default function App() {
 
             <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
               <h2 className="text-base font-semibold">Inference</h2>
-              <Button className="mt-3" variant="primary" onClick={handleInfer}>
-                Run inference
+              <Button
+                className="mt-3"
+                variant="primary"
+                onClick={handleInfer}
+                disabled={inferStatus === "running"}
+              >
+                {inferStatus === "running" ? "Running..." : "Run inference"}
               </Button>
+              {inferError && <div className="mt-2 text-xs text-rose-300">{inferError}</div>}
               <div className="mt-4 space-y-2 text-sm text-slate-200">
-                <div>Latency: {inferResult?.latency_ms.toFixed(1) ?? "176.9"} ms</div>
-                <div>True label: {inferResult?.label ?? 5}</div>
+                <div>
+                  Latency: {inferResult ? inferResult.latency_ms.toFixed(1) : "-"} ms
+                </div>
+                <div>True label: {inferResult?.label ?? "-"}</div>
                 <ul className="space-y-1 text-slate-300">
-                  {(inferResult?.top_k ?? MOCK_INFER.top_k).map((item) => (
+                  {(inferResult?.top_k ?? []).map((item) => (
                     <li key={item.index}>
                       {item.class} ({item.score.toFixed(3)})
                     </li>
                   ))}
                 </ul>
+                {!inferResult && (
+                  <div className="text-xs text-slate-400">Run inference to see results.</div>
+                )}
               </div>
             </section>
 
@@ -409,50 +658,62 @@ export default function App() {
                 <Button className="mt-4 w-full" variant="primary" onClick={handleRunAttacks}>
                   Run attacks
                 </Button>
+                {attackError && <div className="mt-2 text-xs text-rose-300">{attackError}</div>}
                 {job && (
                   <div className="mt-4 text-sm text-slate-300">
                     <div>Status: {job.status}</div>
-                    <div>Progress: {job.progress}%</div>
+                    <div>Progress: {job.progress ?? "-"}%</div>
                   </div>
                 )}
               </section>
             ) : (
               <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
                 <h2 className="text-base font-semibold">Defenses</h2>
+                <div className="mt-3 flex items-center gap-2 text-sm">
+                  <Select
+                    className="w-full"
+                    value={defenseAttackName}
+                    onChange={setDefenseAttackName}
+                    options={attacks.map((name) => ({ value: name, label: name }))}
+                  />
+                  <Button size="sm" variant="outline" onClick={handleRunDefenseAttack}>
+                    Attack
+                  </Button>
+                </div>
                 <div className="mt-3 space-y-3 text-sm">
                   <label className="flex flex-col gap-1">
-                    <span className="text-xs text-slate-400">Режим подбора</span>
-                    <select
-                      className="rounded-lg border border-white/10 bg-white/[0.05] p-2 text-slate-100"
+                    <span className="text-xs text-slate-400">Selection mode</span>
+                    <Select
                       value={defenseMode}
-                      onChange={(e) => setDefenseMode(e.target.value)}
-                    >
-                      <option value="restore_clean">Вернуть класс как на чистом</option>
-                      <option value="maximize_clean_prob">Макс. вероятность класса на чистом</option>
-                    </select>
+                      onChange={setDefenseMode}
+                      options={[
+                        { value: "restore_clean", label: "Restore clean class" },
+                        { value: "maximize_clean_prob", label: "Maximize clean class probability" },
+                      ]}
+                    />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="text-xs text-slate-400">Набор защит</span>
-                    <select
-                      className="rounded-lg border border-white/10 bg-white/[0.05] p-2 text-slate-100"
+                    <span className="text-xs text-slate-400">Defense stack</span>
+                    <Select
                       value={defenseStack}
-                      onChange={(e) => setDefenseStack(e.target.value)}
-                    >
-                      <option value="jpeg">JPEG</option>
-                      <option value="noise">Шум Гаусса</option>
-                      <option value="jpeg+noise">JPEG + шум</option>
-                    </select>
+                      onChange={setDefenseStack}
+                      options={[
+                        { value: "jpeg", label: "JPEG" },
+                        { value: "noise", label: "Gaussian noise" },
+                        { value: "jpeg+noise", label: "JPEG + noise" },
+                      ]}
+                    />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="text-xs text-slate-400">Порядок</span>
-                    <select
-                      className="rounded-lg border border-white/10 bg-white/[0.05] p-2 text-slate-100"
+                    <span className="text-xs text-slate-400">Order</span>
+                    <Select
                       value={defenseOrder}
-                      onChange={(e) => setDefenseOrder(e.target.value)}
-                    >
-                      <option value="jpeg_noise">JPEG→Noise</option>
-                      <option value="noise_jpeg">Noise→JPEG</option>
-                    </select>
+                      onChange={setDefenseOrder}
+                      options={[
+                        { value: "jpeg_noise", label: "JPEG->Noise" },
+                        { value: "noise_jpeg", label: "Noise->JPEG" },
+                      ]}
+                    />
                   </label>
                   <div className="flex items-end gap-2">
                     <label className="flex flex-1 flex-col gap-1">
@@ -467,16 +728,22 @@ export default function App() {
                       />
                     </label>
                     <span className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-200">
-                      без лимита качества
+                      no quality limit
                     </span>
                   </div>
                   <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs text-slate-300">
-                    Цель: добиться правильного ответа любой ценой (подбор JPEG Q и σ).
+                    Goal: restore correct prediction at any cost (tuning JPEG Q and sigma).
                   </div>
                 </div>
-                <Button className="mt-4 w-full" variant="primary" onClick={handleRunDefenses}>
-                  Run defenses
+                <Button
+                  className="mt-4 w-full"
+                  variant="primary"
+                  onClick={handleRunDefenses}
+                  disabled={defenseStatus === "running defenses"}
+                >
+                  {defenseStatus === "running defenses" ? "Running..." : "Run defenses"}
                 </Button>
+                {defenseError && <div className="mt-2 text-xs text-rose-300">{defenseError}</div>}
                 <div className="mt-4 border-t border-white/10 pt-4 text-sm text-slate-300">
                   <div className="flex items-center justify-between text-xs uppercase text-slate-500">
                     <span>Status</span>
@@ -500,7 +767,7 @@ export default function App() {
           <main className="space-y-6">
             <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-base font-semibold">Preview (96×96)</h2>
+                <h2 className="text-base font-semibold">Preview (96x96)</h2>
                 <div className="flex items-center gap-2 text-xs text-slate-300">
                   <span className="rounded-full border border-white/10 bg-white/[0.05] px-2 py-1">index: {index}</span>
                   <span className="rounded-full border border-white/10 bg-white/[0.05] px-2 py-1">model: VGG16</span>
@@ -520,9 +787,11 @@ export default function App() {
                         grid ? "pixel-grid" : ""
                       }`}
                     >
-                      <span className="absolute right-2 top-2 rounded-full border border-white/10 bg-white/[0.08] px-2 py-0.5 text-[10px] uppercase text-slate-300">
-                        mock
-                      </span>
+                      {!item.url && (
+                        <span className="absolute right-2 top-2 rounded-full border border-white/10 bg-white/[0.08] px-2 py-0.5 text-[10px] uppercase text-slate-300">
+                          mock
+                        </span>
+                      )}
                       {item.url ? (
                         <img
                           src={item.url}
@@ -537,7 +806,7 @@ export default function App() {
                             PREVIEW_VARIANTS[item.variant]
                           }`}
                         >
-                          96×96 preview
+                          96x96 preview
                         </div>
                       )}
                     </div>
@@ -574,7 +843,7 @@ export default function App() {
                         >
                           <td className="px-3 py-2 font-medium">{row.attack}</td>
                           <td className="px-3 py-2">
-                            {row.success ? "Да" : row.success === false ? "Нет" : "-"}
+                            {row.success ? "Yes" : row.success === false ? "No" : "-"}
                           </td>
                           <td className="px-3 py-2">{row.pred_before ?? "-"}</td>
                           <td className="px-3 py-2">{row.pred_after ?? "-"}</td>
@@ -603,47 +872,55 @@ export default function App() {
                   <table className="min-w-full text-sm text-slate-200">
                     <thead>
                       <tr className="bg-white/5 text-left text-xs uppercase text-slate-400">
-                        <th className="px-3 py-2">Атака</th>
+                        <th className="px-3 py-2">Attack</th>
                         <th className="px-3 py-2 min-w-[140px]">Clean (target)</th>
-                        <th className="px-3 py-2 min-w-[140px]">После атаки</th>
-                        <th className="px-3 py-2 min-w-[140px]">После защиты</th>
+                        <th className="px-3 py-2 min-w-[140px]">After attack</th>
+                        <th className="px-3 py-2 min-w-[140px]">After defense</th>
                         <th className="px-3 py-2">JPEG</th>
-                        <th className="px-3 py-2">Шум</th>
-                        <th className="px-3 py-2">Попытки</th>
-                        <th className="px-3 py-2">Деградация</th>
-                        <th className="px-3 py-2">Статус</th>
+                        <th className="px-3 py-2">Noise</th>
+                        <th className="px-3 py-2">Attempts</th>
+                        <th className="px-3 py-2">Degradation</th>
+                        <th className="px-3 py-2">Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {DEFENSE_ROWS.map((row) => (
-                        <tr key={row.attack} className="border-t border-white/10 hover:bg-white/[0.04]">
-                          <td className="px-3 py-2 font-medium">{row.attack}</td>
-                          <td className="px-3 py-2">{row.clean}</td>
-                          <td className="px-3 py-2">{row.attacked}</td>
-                          <td className="px-3 py-2">{row.defended}</td>
-                          <td className="px-3 py-2">{row.jpeg}</td>
-                          <td className="px-3 py-2">{row.noise}</td>
-                          <td className="px-3 py-2">{row.attempts}</td>
-                          <td className="px-3 py-2">{row.degradation}</td>
-                          <td className="px-3 py-2">
-                            <span
-                              className={`rounded-full px-2 py-1 text-xs ${
-                                row.status === "Восстановлено"
-                                  ? "border border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-                                  : "border border-rose-400/40 bg-rose-500/10 text-rose-200"
-                              }`}
-                            >
-                              {row.status}
-                            </span>
+                      {defenseRows.length === 0 ? (
+                        <tr className="border-t border-white/10">
+                          <td className="px-3 py-4 text-sm text-slate-400" colSpan={9}>
+                            Run defenses to see results.
                           </td>
                         </tr>
-                      ))}
+                      ) : (
+                        defenseRows.map((row) => (
+                          <tr key={row.attack} className="border-t border-white/10 hover:bg-white/[0.04]">
+                            <td className="px-3 py-2 font-medium">{row.attack}</td>
+                            <td className="px-3 py-2">{row.clean}</td>
+                            <td className="px-3 py-2">{row.attacked}</td>
+                            <td className="px-3 py-2">{row.defended}</td>
+                            <td className="px-3 py-2">{row.jpeg}</td>
+                            <td className="px-3 py-2">{row.noise}</td>
+                            <td className="px-3 py-2">{row.attempts}</td>
+                            <td className="px-3 py-2">{row.degradation}</td>
+                            <td className="px-3 py-2">
+                              <span
+                                className={`rounded-full px-2 py-1 text-xs ${
+                                  row.status === "success"
+                                    ? "border border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
+                                    : "border border-rose-400/40 bg-rose-500/10 text-rose-200"
+                                }`}
+                              >
+                                {row.status === "success" ? "Restored" : "Failed"}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
                 <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs text-slate-300">
-                  Примечание: «без лимита качества» означает, что подбор может привести к сильной деградации изображения. Это
-                  отображается в столбце «Деградация»
+                  Note: "no quality limit" means tuning may heavily degrade the image. This is reflected in the
+                  "Degradation" column.
                 </div>
               </section>
             )}
