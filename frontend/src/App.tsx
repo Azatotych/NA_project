@@ -32,7 +32,33 @@ interface InferResult {
   top_k: { class: string; index: number; score: number }[];
 }
 
-type PageKey = "attacks" | "defenses";
+interface BatchAttackSummary {
+  attack: string;
+  count: number;
+  success: number;
+  avg_l2: number | null;
+  avg_linf: number | null;
+  avg_time: number | null;
+}
+
+interface BatchDefenseSummary {
+  combo: string;
+  restored: number;
+  attempts: number;
+  avg_psnr: number;
+  avg_delta: number;
+}
+
+interface BatchItem {
+  index: number;
+  label: number | null;
+  latency_ms: number;
+  top1: { class: string; index: number; score: number } | null;
+  attacks: AttackResult[];
+  defenses: BatchDefenseSummary[];
+}
+
+type PageKey = "attacks" | "defenses" | "pipeline";
 
 type SelectOption = { value: string; label: string };
 
@@ -172,6 +198,15 @@ const DEFENSE_ROWS = [
   },
 ];
 
+const DEFENSE_COMBOS = [
+  { id: "jpeg_q5", label: "JPEG Q=5" },
+  { id: "jpeg_q8", label: "JPEG Q=8" },
+  { id: "noise_05", label: "Noise sigma=0.50" },
+  { id: "noise_08", label: "Noise sigma=0.80" },
+  { id: "jpeg5_noise05", label: "JPEG Q=5 -> Noise 0.50" },
+  { id: "noise05_jpeg5", label: "Noise 0.50 -> JPEG Q=5" },
+];
+
 const PREVIEW_VARIANTS: Record<string, string> = {
   original: "bg-gradient-to-br from-slate-500/50 via-slate-900 to-slate-950",
   adversarial: "bg-gradient-to-br from-rose-500/40 via-slate-900 to-slate-950",
@@ -210,6 +245,13 @@ export default function App() {
   const [jobsMenuOpen, setJobsMenuOpen] = useState<boolean>(false);
   const jobsMenuRef = useRef<HTMLDivElement | null>(null);
   const defenseTimer = useRef<number | null>(null);
+  const [batchCount, setBatchCount] = useState<number>(8);
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
+  const [batchStatus, setBatchStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [batchProgress, setBatchProgress] = useState<number>(0);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchAttacks, setBatchAttacks] = useState<Record<string, boolean>>({});
+  const [batchDefenses, setBatchDefenses] = useState<Record<string, boolean>>({});
 
   const datasetSize = datasetInfo?.size ?? 5000;
   const apiIndex = Math.max(index - 1, 0);
@@ -319,6 +361,20 @@ export default function App() {
   }, [attacks, defenseAttackName]);
 
   useEffect(() => {
+    if (!attacks.length) return;
+    const initial: Record<string, boolean> = {};
+    attacks.forEach((name) => (initial[name] = true));
+    setBatchAttacks((prev) => (Object.keys(prev).length ? prev : initial));
+  }, [attacks]);
+
+  useEffect(() => {
+    if (Object.keys(batchDefenses).length) return;
+    const initial: Record<string, boolean> = {};
+    DEFENSE_COMBOS.forEach((combo) => (initial[combo.id] = true));
+    setBatchDefenses(initial);
+  }, [batchDefenses]);
+
+  useEffect(() => {
     if (defenseTimer.current) {
       window.clearTimeout(defenseTimer.current);
       defenseTimer.current = null;
@@ -344,6 +400,40 @@ export default function App() {
   const clampIndex = (value: number) => Math.min(Math.max(value, 1), datasetSize);
   const safeNumber = (value: number, fallback: number) =>
     Number.isNaN(value) ? fallback : value;
+
+  const hashNumber = (input: string) => {
+    let hash = 0;
+    for (let i = 0; i < input.length; i += 1) {
+      hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+    }
+    return hash;
+  };
+
+  const pseudoRandom = (seed: string) => {
+    const h = hashNumber(seed);
+    return ((h % 1000) / 1000) * 0.999 + 0.0005;
+  };
+
+  const getBatchIndices = (count: number) => {
+    const maxCount = Math.min(Math.max(count, 1), datasetSize);
+    return Array.from({ length: maxCount }, (_, i) => (apiIndex + i) % datasetSize);
+  };
+
+  const waitForJob = async (jobId: string) => {
+    for (;;) {
+      const res = await fetch(`/api/v1/jobs/${jobId}`);
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        const message = payload?.detail || `HTTP ${res.status}`;
+        throw new Error(message);
+      }
+      const data = await res.json();
+      if (data.status === "done" || data.status === "stopped") {
+        return data as JobStatus;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  };
 
   const handleInfer = async () => {
     setInferStatus("running");
@@ -490,6 +580,173 @@ export default function App() {
     }
   };
 
+  const handleRunBatch = async () => {
+    if (batchStatus === "running") return;
+    setBatchError(null);
+    setBatchStatus("running");
+    setBatchProgress(0);
+    setBatchItems([]);
+    const indices = getBatchIndices(batchCount);
+    const attackList = attacks
+      .filter((name) => batchAttacks[name])
+      .map((name) => ({ name }));
+    const defenseList = DEFENSE_COMBOS.filter((combo) => batchDefenses[combo.id]);
+
+    if (attackList.length === 0) {
+      setBatchError("Select at least one attack.");
+      setBatchStatus("error");
+      return;
+    }
+    if (defenseList.length === 0) {
+      setBatchError("Select at least one defense combo.");
+      setBatchStatus("error");
+      return;
+    }
+
+    const collected: BatchItem[] = [];
+    try {
+      for (let i = 0; i < indices.length; i += 1) {
+        const idx = indices[i];
+        const inferRes = await fetch("/api/v1/infer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ index: idx, top_k: 5 }),
+        });
+        if (!inferRes.ok) {
+          const payload = await inferRes.json().catch(() => null);
+          const message = payload?.detail || `HTTP ${inferRes.status}`;
+          throw new Error(message);
+        }
+        const inferData: InferResult = await inferRes.json();
+
+        const attackRes = await fetch("/api/v1/jobs/attack", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ index: idx, attacks: attackList }),
+        });
+        if (!attackRes.ok) {
+          const payload = await attackRes.json().catch(() => null);
+          const message = payload?.detail || `HTTP ${attackRes.status}`;
+          throw new Error(message);
+        }
+        const attackData = await attackRes.json();
+        if (!attackData?.job_id) {
+          throw new Error("Job start failed.");
+        }
+        const jobData = await waitForJob(attackData.job_id);
+
+        const defenses: BatchDefenseSummary[] = defenseList.map((combo) => {
+          const attempts = Math.max(1, Math.round(20 + pseudoRandom(`${idx}-${combo.id}`) * 60));
+          const restored = jobData.results.filter((row) => {
+            const roll = pseudoRandom(`${idx}-${combo.id}-${row.attack}`);
+            return (row.success ? 0.7 : 0.45) + roll > 0.8;
+          }).length;
+          const avg_psnr = 8 + pseudoRandom(`${combo.id}-${idx}`) * 8;
+          const avg_delta = 0.02 + pseudoRandom(`${combo.id}-delta-${idx}`) * 0.08;
+          return {
+            combo: combo.label,
+            restored,
+            attempts,
+            avg_psnr,
+            avg_delta,
+          };
+        });
+
+        collected.push({
+          index: idx,
+          label: inferData.label,
+          latency_ms: inferData.latency_ms,
+          top1: inferData.top_k[0] || null,
+          attacks: jobData.results,
+          defenses,
+        });
+        setBatchItems([...collected]);
+        setBatchProgress(Math.round(((i + 1) / indices.length) * 100));
+      }
+      setBatchStatus("done");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Batch run failed";
+      setBatchError(message);
+      setBatchStatus("error");
+    }
+  };
+
+  const batchAttackSummary = useMemo<BatchAttackSummary[]>(() => {
+    const rows: Record<string, BatchAttackSummary> = {};
+    batchItems.forEach((item) => {
+      item.attacks.forEach((attack) => {
+        if (!rows[attack.attack]) {
+          rows[attack.attack] = {
+            attack: attack.attack,
+            count: 0,
+            success: 0,
+            avg_l2: null,
+            avg_linf: null,
+            avg_time: null,
+          };
+        }
+        const row = rows[attack.attack];
+        row.count += 1;
+        if (attack.success) row.success += 1;
+        row.avg_l2 = (row.avg_l2 ?? 0) + (attack.l2 ?? 0);
+        row.avg_linf = (row.avg_linf ?? 0) + (attack.linf ?? 0);
+        row.avg_time = (row.avg_time ?? 0) + (attack.time_ms ?? 0);
+      });
+    });
+    return Object.values(rows).map((row) => ({
+      ...row,
+      avg_l2: row.count ? (row.avg_l2 ?? 0) / row.count : null,
+      avg_linf: row.count ? (row.avg_linf ?? 0) / row.count : null,
+      avg_time: row.count ? (row.avg_time ?? 0) / row.count : null,
+    }));
+  }, [batchItems]);
+
+  const batchDefenseSummary = useMemo<BatchDefenseSummary[]>(() => {
+    const rows: Record<string, BatchDefenseSummary> = {};
+    batchItems.forEach((item) => {
+      item.defenses.forEach((defense) => {
+        if (!rows[defense.combo]) {
+          rows[defense.combo] = {
+            combo: defense.combo,
+            restored: 0,
+            attempts: 0,
+            avg_psnr: 0,
+            avg_delta: 0,
+          };
+        }
+        const row = rows[defense.combo];
+        row.restored += defense.restored;
+        row.attempts += defense.attempts;
+        row.avg_psnr += defense.avg_psnr;
+        row.avg_delta += defense.avg_delta;
+      });
+    });
+    return Object.values(rows).map((row) => ({
+      ...row,
+      avg_psnr: batchItems.length ? row.avg_psnr / batchItems.length : 0,
+      avg_delta: batchItems.length ? row.avg_delta / batchItems.length : 0,
+    }));
+  }, [batchItems]);
+
+  const batchTotals = useMemo(() => {
+    const totalAttacks = batchItems.reduce((sum, item) => sum + item.attacks.length, 0);
+    const successAttacks = batchItems.reduce(
+      (sum, item) => sum + item.attacks.filter((attack) => attack.success).length,
+      0
+    );
+    const totalLatency = batchItems.reduce((sum, item) => sum + item.latency_ms, 0);
+    const avgLatency = batchItems.length ? totalLatency / batchItems.length : 0;
+    const totalRestored = batchDefenseSummary.reduce((sum, row) => sum + row.restored, 0);
+    const totalDefenseAttempts = batchDefenseSummary.reduce((sum, row) => sum + row.attempts, 0);
+    return {
+      totalAttacks,
+      successAttacks,
+      avgLatency,
+      totalRestored,
+      totalDefenseAttempts,
+    };
+  }, [batchItems, batchDefenseSummary]);
+
   const attackPreviewItems = [
     { label: "ORIGINAL", subtitle: "5 (dog) (p=0.468)", url: previewUrl, variant: "original" },
     { label: "ADVERSARIAL", subtitle: "6 (horse) (p=1.000)", url: advUrl, variant: "adversarial" },
@@ -507,7 +764,7 @@ export default function App() {
   const stackLabel = defenseStack;
   const orderLabel = defenseOrder === "jpeg_noise" ? "JPEG->Noise" : "Noise->JPEG";
 
-  const pageLabel = page === "attacks" ? "Attacks" : "Defenses";
+  const pageLabel = page === "attacks" ? "Attacks" : page === "defenses" ? "Defenses" : "Pipeline";
 
   return (
     <div className="relative min-h-screen bg-[#060913] text-slate-100">
@@ -521,7 +778,7 @@ export default function App() {
             <div className="mt-1 text-base font-semibold">Current view: {pageLabel}</div>
           </div>
           <div className="flex items-center gap-4">
-            {(["attacks", "defenses"] as PageKey[]).map((key) => (
+            {(["attacks", "defenses", "pipeline"] as PageKey[]).map((key) => (
               <button
                 key={key}
                 type="button"
@@ -530,7 +787,7 @@ export default function App() {
                 }`}
                 onClick={() => setPage(key)}
               >
-                {key === "attacks" ? "Attacks" : "Defenses"}
+                {key === "attacks" ? "Attacks" : key === "defenses" ? "Defenses" : "Pipeline"}
                 {page === key && (
                   <span className="absolute -bottom-2 left-0 h-0.5 w-full rounded-full bg-indigo-500" />
                 )}
@@ -634,7 +891,7 @@ export default function App() {
               </div>
             </section>
 
-            {page === "attacks" ? (
+            {page === "attacks" && (
               <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
                 <h2 className="text-base font-semibold">Attacks</h2>
                 <div className="mt-3 space-y-2 text-sm">
@@ -666,7 +923,9 @@ export default function App() {
                   </div>
                 )}
               </section>
-            ) : (
+            )}
+
+            {page === "defenses" && (
               <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
                 <h2 className="text-base font-semibold">Defenses</h2>
                 <div className="mt-3 flex items-center gap-2 text-sm">
@@ -762,6 +1021,89 @@ export default function App() {
                 </div>
               </section>
             )}
+
+            {page === "pipeline" && (
+              <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
+                <h2 className="text-base font-semibold">Pipeline batch</h2>
+                <div className="mt-3 space-y-3 text-sm">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs text-slate-400">Images to process</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={datasetSize}
+                      className="rounded-lg border border-white/10 bg-white/[0.05] p-2 text-slate-100"
+                      value={batchCount}
+                      onChange={(e) =>
+                        setBatchCount(Math.min(datasetSize, Math.max(1, Number(e.target.value))))
+                      }
+                    />
+                  </label>
+                  <div>
+                    <div className="text-xs uppercase text-slate-400">Attacks</div>
+                    <div className="mt-2 space-y-1">
+                      {attacks.map((name) => (
+                        <label key={name} className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={batchAttacks[name] ?? false}
+                            onChange={(e) =>
+                              setBatchAttacks((prev) => ({ ...prev, [name]: e.target.checked }))
+                            }
+                          />
+                          <span>{name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase text-slate-400">Defense combos</div>
+                    <div className="mt-2 space-y-1">
+                      {DEFENSE_COMBOS.map((combo) => (
+                        <label key={combo.id} className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={batchDefenses[combo.id] ?? false}
+                            onChange={(e) =>
+                              setBatchDefenses((prev) => ({ ...prev, [combo.id]: e.target.checked }))
+                            }
+                          />
+                          <span>{combo.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <Button
+                  className="mt-4 w-full"
+                  variant="primary"
+                  onClick={handleRunBatch}
+                  disabled={batchStatus === "running"}
+                >
+                  {batchStatus === "running" ? "Running pipeline..." : "Run pipeline"}
+                </Button>
+                {batchError && <div className="mt-2 text-xs text-rose-300">{batchError}</div>}
+                <div className="mt-4 border-t border-white/10 pt-4 text-sm text-slate-300">
+                  <div className="flex items-center justify-between text-xs uppercase text-slate-500">
+                    <span>Status</span>
+                    <span>Progress</span>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-sm">
+                    <span>{batchStatus}</span>
+                    <span>{batchProgress}%</span>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
+                    <div
+                      className="h-full rounded-full bg-sky-500 transition-all"
+                      style={{ width: `${batchProgress}%` }}
+                    />
+                  </div>
+                  <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs text-slate-300">
+                    Defense results are simulated based on attack outcomes until backend defenses are wired.
+                  </div>
+                </div>
+              </section>
+            )}
           </aside>
 
           <main className="space-y-6">
@@ -796,7 +1138,7 @@ export default function App() {
                         <img
                           src={item.url}
                           alt={item.label}
-                          style={scaleStyle}
+                          style={{ ...scaleStyle, transform: "rotate(90deg)" }}
                           className="pixelated rounded-md"
                         />
                       ) : (
@@ -815,7 +1157,7 @@ export default function App() {
               </div>
             </section>
 
-            {page === "attacks" ? (
+            {page === "attacks" && (
               <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
                 <h2 className="text-base font-semibold">Attack results</h2>
                 <div className="mt-3 overflow-x-auto">
@@ -857,7 +1199,9 @@ export default function App() {
                   </table>
                 </div>
               </section>
-            ) : (
+            )}
+
+            {page === "defenses" && (
               <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h2 className="text-base font-semibold">Defense results</h2>
@@ -922,6 +1266,232 @@ export default function App() {
                   Note: "no quality limit" means tuning may heavily degrade the image. This is reflected in the
                   "Degradation" column.
                 </div>
+              </section>
+            )}
+
+            {page === "pipeline" && (
+              <section className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <div className="text-xs uppercase text-slate-400">Images processed</div>
+                    <div className="mt-2 text-2xl font-semibold">{batchItems.length}</div>
+                    <div className="mt-1 text-xs text-slate-500">target: {batchCount}</div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <div className="text-xs uppercase text-slate-400">Attack success</div>
+                    <div className="mt-2 text-2xl font-semibold">
+                      {batchTotals.totalAttacks
+                        ? `${Math.round((batchTotals.successAttacks / batchTotals.totalAttacks) * 100)}%`
+                        : "-"}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      {batchTotals.successAttacks} / {batchTotals.totalAttacks}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <div className="text-xs uppercase text-slate-400">Avg inference latency</div>
+                    <div className="mt-2 text-2xl font-semibold">
+                      {batchItems.length ? `${batchTotals.avgLatency.toFixed(1)} ms` : "-"}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">top-1 per image</div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <div className="text-xs uppercase text-slate-400">Defense restored</div>
+                    <div className="mt-2 text-2xl font-semibold">
+                      {batchTotals.totalDefenseAttempts
+                        ? `${Math.round((batchTotals.totalRestored / batchTotals.totalDefenseAttempts) * 100)}%`
+                        : "-"}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      {batchTotals.totalRestored} / {batchTotals.totalDefenseAttempts}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
+                  <h2 className="text-base font-semibold">Attack effectiveness</h2>
+                  <div className="mt-4 space-y-3">
+                    {batchAttackSummary.length === 0 && (
+                      <div className="text-sm text-slate-400">Run pipeline to see results.</div>
+                    )}
+                    {batchAttackSummary.map((row) => {
+                      const rate = row.count ? row.success / row.count : 0;
+                      return (
+                        <div key={row.attack} className="flex items-center gap-4 text-sm">
+                          <div className="w-28 text-xs text-slate-300">{row.attack}</div>
+                          <div className="flex-1">
+                            <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+                              <div
+                                className="h-full rounded-full bg-rose-500/70"
+                                style={{ width: `${Math.round(rate * 100)}%` }}
+                              />
+                            </div>
+                          </div>
+                          <div className="w-16 text-right text-xs text-slate-300">
+                            {Math.round(rate * 100)}%
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
+                  <h2 className="text-base font-semibold">Defense combinations</h2>
+                  <div className="mt-4 space-y-3">
+                    {batchDefenseSummary.length === 0 && (
+                      <div className="text-sm text-slate-400">Run pipeline to see results.</div>
+                    )}
+                    {batchDefenseSummary.map((row) => {
+                      const rate = row.attempts ? row.restored / row.attempts : 0;
+                      return (
+                        <div key={row.combo} className="flex items-center gap-4 text-sm">
+                          <div className="w-40 text-xs text-slate-300">{row.combo}</div>
+                          <div className="flex-1">
+                            <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+                              <div
+                                className="h-full rounded-full bg-emerald-500/70"
+                                style={{ width: `${Math.round(rate * 100)}%` }}
+                              />
+                            </div>
+                          </div>
+                          <div className="w-16 text-right text-xs text-slate-300">
+                            {Math.round(rate * 100)}%
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="grid gap-6 xl:grid-cols-2">
+                  <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
+                    <h2 className="text-base font-semibold">Attack summary table</h2>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="min-w-full text-sm text-slate-200">
+                        <thead>
+                          <tr className="bg-white/5 text-left text-xs uppercase text-slate-400">
+                            <th className="px-3 py-2">Attack</th>
+                            <th className="px-3 py-2">Success</th>
+                            <th className="px-3 py-2">Avg L2</th>
+                            <th className="px-3 py-2">Avg Linf</th>
+                            <th className="px-3 py-2">Avg Time</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {batchAttackSummary.length === 0 ? (
+                            <tr className="border-t border-white/10">
+                              <td className="px-3 py-4 text-sm text-slate-400" colSpan={5}>
+                                Run pipeline to see results.
+                              </td>
+                            </tr>
+                          ) : (
+                            batchAttackSummary.map((row) => (
+                              <tr key={row.attack} className="border-t border-white/10">
+                                <td className="px-3 py-2 font-medium">{row.attack}</td>
+                                <td className="px-3 py-2">
+                                  {row.success}/{row.count}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {row.avg_l2 !== null ? row.avg_l2.toFixed(4) : "-"}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {row.avg_linf !== null ? row.avg_linf.toFixed(4) : "-"}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {row.avg_time !== null ? row.avg_time.toFixed(1) : "-"} ms
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
+                    <h2 className="text-base font-semibold">Defense summary table</h2>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="min-w-full text-sm text-slate-200">
+                        <thead>
+                          <tr className="bg-white/5 text-left text-xs uppercase text-slate-400">
+                            <th className="px-3 py-2">Combo</th>
+                            <th className="px-3 py-2">Restored</th>
+                            <th className="px-3 py-2">Attempts</th>
+                            <th className="px-3 py-2">Avg PSNR</th>
+                            <th className="px-3 py-2">Avg Delta</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {batchDefenseSummary.length === 0 ? (
+                            <tr className="border-t border-white/10">
+                              <td className="px-3 py-4 text-sm text-slate-400" colSpan={5}>
+                                Run pipeline to see results.
+                              </td>
+                            </tr>
+                          ) : (
+                            batchDefenseSummary.map((row) => (
+                              <tr key={row.combo} className="border-t border-white/10">
+                                <td className="px-3 py-2 font-medium">{row.combo}</td>
+                                <td className="px-3 py-2">{row.restored}</td>
+                                <td className="px-3 py-2">{row.attempts}</td>
+                                <td className="px-3 py-2">{row.avg_psnr.toFixed(2)} dB</td>
+                                <td className="px-3 py-2">{row.avg_delta.toFixed(3)}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
+
+                <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_0_24px_rgba(15,23,42,0.35)]">
+                  <h2 className="text-base font-semibold">Per-image breakdown</h2>
+                  <div className="mt-3 overflow-x-auto">
+                    <table className="min-w-full text-sm text-slate-200">
+                      <thead>
+                        <tr className="bg-white/5 text-left text-xs uppercase text-slate-400">
+                          <th className="px-3 py-2">Index</th>
+                          <th className="px-3 py-2">Top-1</th>
+                          <th className="px-3 py-2">Latency</th>
+                          <th className="px-3 py-2">Attack success</th>
+                          <th className="px-3 py-2">Defense restored</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {batchItems.length === 0 ? (
+                          <tr className="border-t border-white/10">
+                            <td className="px-3 py-4 text-sm text-slate-400" colSpan={5}>
+                              Run pipeline to see results.
+                            </td>
+                          </tr>
+                        ) : (
+                          batchItems.map((item) => {
+                            const successCount = item.attacks.filter((row) => row.success).length;
+                            const restoredCount = item.defenses.reduce(
+                              (sum, row) => sum + row.restored,
+                              0
+                            );
+                            return (
+                              <tr key={item.index} className="border-t border-white/10">
+                                <td className="px-3 py-2 font-medium">{item.index}</td>
+                                <td className="px-3 py-2">
+                                  {item.top1 ? `${item.top1.class} (${item.top1.score.toFixed(3)})` : "-"}
+                                </td>
+                                <td className="px-3 py-2">{item.latency_ms.toFixed(1)} ms</td>
+                                <td className="px-3 py-2">
+                                  {successCount}/{item.attacks.length}
+                                </td>
+                                <td className="px-3 py-2">{restoredCount}</td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
               </section>
             )}
           </main>

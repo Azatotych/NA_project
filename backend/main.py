@@ -36,6 +36,11 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+def preload_state():
+    threading.Thread(target=STATE.load, daemon=True).start()
+
+
 class AppState:
     def __init__(self):
         self.images = None
@@ -43,26 +48,34 @@ class AppState:
         self.model = None
         self.model_path = None
         self.data_dir = None
+        self._load_lock = threading.Lock()
 
     def load(self):
-        settings = load_settings()
-        self.data_dir = settings.get("data_dir") or str(BIN_DIR)
-        self.model_path = settings.get("model_path")
-        self.images, self.labels = load_train_dataset(self.data_dir)
-        if self.model_path:
-            model_path = Path(self.model_path)
-            model = build_model()
-            state = load_state_dict(model_path)
-            model.load_state_dict(state)
-            model.eval()
-            self.model = model
+        with self._load_lock:
+            if self.images is not None:
+                return
+            started = time.time()
+            settings = load_settings()
+            self.data_dir = settings.get("data_dir") or str(BIN_DIR)
+            self.model_path = settings.get("model_path")
+            self.images, self.labels = load_train_dataset(self.data_dir)
+            if self.model_path:
+                model_path = Path(self.model_path)
+                model = build_model()
+                state = load_state_dict(model_path)
+                model.load_state_dict(state)
+                model.eval()
+                self.model = model
+            duration = time.time() - started
+            print(f"[startup] state loaded in {duration:.2f}s")
 
     def reset(self):
-        self.images = None
-        self.labels = None
-        self.model = None
-        self.model_path = None
-        self.data_dir = None
+        with self._load_lock:
+            self.images = None
+            self.labels = None
+            self.model = None
+            self.model_path = None
+            self.data_dir = None
 
 
 STATE = AppState()

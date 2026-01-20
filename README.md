@@ -28,6 +28,7 @@
 ```
 ./scripts/dev.ps1
 ```
+Logs are written to `logs/*.log`.
 
 После запуска:
 - Backend: http://localhost:8000
